@@ -247,6 +247,8 @@ public:
 	uint16_t getUInt(const unsigned long response) const;
 	float getFloat(const unsigned long response) const;	
 	unsigned int temperatureToData(float temperature);
+	// Brink renovent HR
+	uint8_t getU8 (const unsigned long response) const;
 
 	//basic requests
 	unsigned long setBoilerStatus(bool enableCentralHeating, bool enableHotWater = false, bool enableCooling = false, bool enableOutsideTemperatureCompensation = false, bool enableCentralHeating2 = false);
