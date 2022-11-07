@@ -1,6 +1,8 @@
 /*
 OpenTherm.cpp - OpenTherm Communication Library For Arduino, ESP8266
 Copyright 2018, Ihor Melnyk
+
+Updated 7-11-2022 by mneuron for ventilation / HVAC support
 */
 
 #include "OpenTherm.h"
@@ -73,7 +75,7 @@ bool OpenTherm::sendRequestAync(unsigned long request)
 	interrupts();
 
 	if (!ready)
-	  return false;
+    return false;
 
 	status = OpenThermStatus::REQUEST_SENDING;
 	response = 0;
@@ -81,7 +83,7 @@ bool OpenTherm::sendRequestAync(unsigned long request)
 
 	sendBit(HIGH); //start bit
 	for (int i = 31; i >= 0; i--) {
-		sendBit(bitRead(request, i));
+		sendBit(bitRead(request, i)); //bitRead - standard Arduino function
 	}
 	sendBit(HIGH); //stop bit
 	setIdleState();
@@ -132,7 +134,7 @@ void ICACHE_RAM_ATTR OpenTherm::handleInterrupt()
 	if (isReady())
 	{
 		if (isSlave && readState() == HIGH) {
-		   status = OpenThermStatus::RESPONSE_WAITING;
+      status = OpenThermStatus::RESPONSE_WAITING;
 		}
 		else {
 			return;
@@ -315,7 +317,7 @@ unsigned long OpenTherm::buildSetBoilerTemperatureRequest(float temperature) {
 }
 
 unsigned long OpenTherm::buildGetBoilerTemperatureRequest() {
-	return buildRequest(OpenThermMessageType::READ_DATA, OpenThermMessageID::Tboiler, 0);
+	return buildRequest(OpenThermMessageType::READ_DATA, OpenThermMessageID::Tboiler, 0); 
 }
 
 //parsing responses
@@ -344,12 +346,19 @@ bool OpenTherm::isDiagnostic(unsigned long response) {
 }
 
 uint16_t OpenTherm::getUInt(const unsigned long response) const {
-	const uint16_t u88 = response & 0xffff;
-	return u88;
+	const uint16_t u88 = response & 0xffff; // int16_t - 16 bits type maximum value is 2^16, or 65535.  0xffff= 0b1111111111111111 =>all bits are 1
+	return u88;									
 }
 
+//  Brink Renovent HR
+uint8_t OpenTherm::getU8 (const unsigned long response) const {
+	const uint8_t u8 = response & 0xff;
+	return u8;	
+}
+
+
 float OpenTherm::getFloat(const unsigned long response) const {
-	const uint16_t u88 = getUInt(response);
+	const uint16_t u88 = getUInt(response);  
 	const float f = (u88 & 0x8000) ? -(0x10000L - u88) / 256.0f : u88 / 256.0f;
 	return f;
 }
@@ -378,7 +387,7 @@ float OpenTherm::getBoilerTemperature() {
 }
 
 float OpenTherm::getReturnTemperature() {
-    unsigned long response = sendRequest(buildRequest(OpenThermRequestType::READ, OpenThermMessageID::Tret, 0));
+    unsigned long response = sendRequest(buildRequest(OpenThermRequestType::READ, OpenThermMessageID::Tret, 0)); 
     return isValidResponse(response) ? getFloat(response) : 0;
 }
 
@@ -389,7 +398,7 @@ bool OpenTherm::setDHWSetpoint(float temperature) {
 }
     
 float OpenTherm::getDHWTemperature() {
-    unsigned long response = sendRequest(buildRequest(OpenThermMessageType::READ_DATA, OpenThermMessageID::Tdhw, 0));
+    unsigned long response = sendRequest(buildRequest(OpenThermMessageType::READ_DATA, OpenThermMessageID::Tdhw, 0)); 
     return isValidResponse(response) ? getFloat(response) : 0;
 }
 
@@ -406,3 +415,119 @@ float OpenTherm::getPressure() {
 unsigned char OpenTherm::getFault() {
     return ((sendRequest(buildRequest(OpenThermRequestType::READ, OpenThermMessageID::ASFflags, 0)) >> 8) & 0xff);
 }
+
+//  Brink Renovent HR
+
+uint8_t OpenTherm::getBrinkTSP(BrinkTSPindex index) {
+	
+	if (index > 72 || index < 0) return 0;
+	unsigned int TSPdata = (unsigned int)index << 8;
+	unsigned long response = sendRequest(buildRequest(OpenThermRequestType::READ, OpenThermMessageID::VentTSPEntry, TSPdata) );
+	return isValidResponse(response) ? getU8(response) : 0;
+}
+
+bool OpenTherm::setBrinkTSP(BrinkTSPindex index, uint8_t value) {
+	
+	if (index > 28 || index < 0) return 0;
+	if (value < 0) value = 0;
+    if (value > 255) value = 255;
+	unsigned int TSPdata = value;
+	TSPdata |= (unsigned int)index << 8;
+
+	unsigned long response = sendRequest(buildRequest(OpenThermRequestType::WRITE_DATA, OpenThermMessageID::VentTSPEntry, TSPdata) );
+	return isValidResponse(response);
+}
+
+
+unsigned int OpenTherm::getVentRPM(OpenThermMessageID id) {
+
+	if ( id != VentRPMexhaust  && id != VentRPMsupply ) return 0;
+	unsigned long response = sendRequest(buildRequest(OpenThermRequestType::READ, OpenThermMessageID::VentTsupplyin, 0));
+	return isValidResponse(response) ? getUInt(response) : 0;
+}
+
+uint8_t OpenTherm::getVentFaultCode() {
+	unsigned long response = sendRequest(buildRequest(OpenThermRequestType::READ, OpenThermMessageID::VentFaultBufferEntry, 0));
+	return isValidResponse(response) ? getU8(response) : 0;
+}
+
+
+unsigned int OpenTherm::getVentilation() {
+	unsigned long response = sendRequest(buildRequest(OpenThermRequestType::READ, OpenThermMessageID::VentNomVent, 0));
+	return isValidResponse(response) ? getUInt(response) : 0;
+}
+
+
+
+/** Setting the nominal ventilation, clamps to the range 0-100
+ * Some ventilation systems have special values for nominal value 0,1,2,3
+ */
+unsigned int OpenTherm::setVentilation(unsigned int nominal_value) {
+	if (nominal_value < 0) nominal_value = 0;
+	if (nominal_value > 100) nominal_value = 100;
+	unsigned long response = sendRequest(buildRequest(OpenThermRequestType::WRITE, OpenThermMessageID::VentNomVentSet, nominal_value));
+	return isValidResponse(response) ? getUInt(response) : 0;
+}
+
+
+/**
+ * Temperature getting functions for Vent systems
+ * Often respond with temperature '80' when the sensors aren't available
+ */
+float OpenTherm::getVentSupplyInTemperature() {
+	unsigned long response = sendRequest(buildRequest(OpenThermRequestType::READ, OpenThermMessageID::VentTsupplyin, 0));
+	return isValidResponse(response) ? getFloat(response) : 0;
+}
+
+float OpenTherm::getVentSupplyOutTemperature() {
+	unsigned long response = sendRequest(buildRequest(OpenThermRequestType::READ, OpenThermMessageID::VentTsupplyout, 0));
+	return isValidResponse(response) ? getFloat(response) : 0;
+}
+
+float OpenTherm::getVentExhaustInTemperature() {
+	unsigned long response = sendRequest(
+		buildRequest(OpenThermRequestType::READ, OpenThermMessageID::VentTexhaustin, 0));
+	return isValidResponse(response) ? getFloat(response) : 0;
+}
+
+float OpenTherm::getVentExhaustOutTemperature() {
+	unsigned long response = sendRequest(buildRequest(OpenThermRequestType::READ, OpenThermMessageID::VentTexhaustout, 0));
+	return isValidResponse(response) ? getFloat(response) : 0;
+}
+
+bool OpenTherm::getFaultIndication() {  //LB0:  0=no Fault
+	unsigned long response = sendRequest(buildRequest(OpenThermRequestType::READ, OpenThermMessageID::VentStatus,0)); 
+	return isValidResponse(response)? (getUInt(response) & 0x1) : 0;   // 0x1 = 0b0000000001, check bit on zero position 
+}
+
+bool OpenTherm::getVentilationMode() { // LB1: 1=Active 
+	unsigned long response = sendRequest(buildRequest(OpenThermRequestType::READ, OpenThermMessageID::VentStatus,0));
+	return isValidResponse(response) ? (getUInt(response) & 0x2) >> 1: 0;  // 0x2 = 0b0000000010
+}
+
+bool OpenTherm::getBypassStatus() {  // LB2:   0=Closed
+	unsigned long response = sendRequest(buildRequest(OpenThermRequestType::READ, OpenThermMessageID::VentStatus,0));
+	return isValidResponse(response) ? (getUInt(response) & 0x4) >> 2: 0;  // 0x4 = 0b0000000100
+}
+
+bool OpenTherm::getBypassAutomaticStatus() {  //LB3:  0=manual
+	unsigned long response = sendRequest(buildRequest(OpenThermRequestType::READ, OpenThermMessageID::VentStatus,0));
+	return isValidResponse(response) ? (getUInt(response) & 0x8) >> 3: 0;   // 0x8 = 0b0000001000
+}
+
+bool OpenTherm::getDiagnosticIndication() {  //LB6  0=no diagnostic (wymiana filtra)
+	unsigned long response = sendRequest(buildRequest(OpenThermRequestType::READ, OpenThermMessageID::VentStatus,0));
+	return isValidResponse(response)? (getUInt(response) & 0x20) >> 5: 0;   // 0x20 = 0b000100000
+}
+
+
+bool OpenTherm::getBypassPosition() {  // HB1:   0=Closed
+	unsigned long response = sendRequest(buildRequest(OpenThermRequestType::READ, OpenThermMessageID::VentStatus,0));
+	return isValidResponse(response) ? (getUInt(response) & 0x200) >> 9: 0;  // 0x200 = 0b00000001000000000
+}
+
+bool OpenTherm::getBypassMode() {  // HB2:   
+	unsigned long response = sendRequest(buildRequest(OpenThermRequestType::READ, OpenThermMessageID::VentStatus,0));
+	return isValidResponse(response) ? (getUInt(response) & 0x400) >> 10: 0;  // 0x200 = 0b00000010000000000
+}
+
